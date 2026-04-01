@@ -2,13 +2,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import sqlite3, os, json
+import sqlite3, os, json, requests
 from datetime import datetime, date, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-import smtplib, ssl
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import pytz
 
 app = FastAPI()
@@ -20,10 +17,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH    = os.environ.get("DB_PATH", "bodyritual.db")
-GMAIL_USER = os.environ.get("GMAIL_USER", "")       # your gmail address
-GMAIL_PASS = os.environ.get("GMAIL_APP_PASS", "")   # 16-char app password
-EMAIL_TO   = os.environ.get("EMAIL_TO", "")          # where digest lands (can be same address)
+DB_PATH     = os.environ.get("DB_PATH", "bodyritual.db")
+RESEND_KEY  = os.environ.get("RESEND_API_KEY", "")
+EMAIL_FROM  = os.environ.get("EMAIL_FROM", "")        # e.g. habits@yourdomain.com
+EMAIL_TO    = os.environ.get("EMAIL_TO", "")
 TRACKER_URL = os.environ.get("TRACKER_URL", "https://your-tracker-link")
 
 HABITS = ["workout", "water", "stretch"]
@@ -160,11 +157,11 @@ def get_history():
     return [{"date": r["date"], "habits": json.loads(r["habits"]),
              "mood": r["mood"], "notes": r["notes"]} for r in rows]
 
-# ── EMAIL DIGEST ──────────────────────────────────────────────────────────────
+# ── EMAIL DIGEST (via Resend HTTP API — works on Railway) ─────────────────────
 
 def send_email_digest():
-    if not GMAIL_USER or not GMAIL_PASS or not EMAIL_TO:
-        print("Email not configured, skipping digest")
+    if not RESEND_KEY or not EMAIL_FROM or not EMAIL_TO:
+        print("Email not configured (RESEND_API_KEY / EMAIL_FROM / EMAIL_TO), skipping digest")
         return
 
     streak     = get_streak()
@@ -187,21 +184,7 @@ def send_email_digest():
     )
     done_line = "🎯 All three done today — log it." if done_today == 3 else "👉 Time to log before bed."
 
-    # Plain text fallback
-    checklist_txt = "\n".join(
-        f"{'✅' if habits.get(h) else '⬜'} {icon} {name}"
-        for h, (icon, name) in habit_lines.items()
-    )
-    text_body = (
-        f"Body Ritual — 9 PM Check-in\n\n"
-        f"{''.join(dots)}  last 7 days\n\n"
-        f"{checklist_txt}\n\n"
-        f"{streak_line}\n"
-        f"{done_line}\n\n"
-        f"{TRACKER_URL}\n"
-    )
-
-    # HTML email
+    # HTML email (identical to original)
     rows_html = ""
     for h, (icon, name) in habit_lines.items():
         done  = habits.get(h)
@@ -247,20 +230,29 @@ def send_email_digest():
   </div>
 </body></html>"""
 
-    msg            = MIMEMultipart("alternative")
     subject_prefix = "✅ All done!" if done_today == 3 else "👉 Log before bed"
-    msg["Subject"] = f"{subject_prefix} — Body Ritual {today}"
-    msg["From"]    = GMAIL_USER
-    msg["To"]      = EMAIL_TO
-    msg.attach(MIMEText(text_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
+    subject = f"{subject_prefix} — Body Ritual {today}"
 
+    # ── RESEND HTTP API (replaces smtplib) ────────────────────────────────────
     try:
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as server:
-            server.login(GMAIL_USER, GMAIL_PASS)
-            server.sendmail(GMAIL_USER, EMAIL_TO, msg.as_string())
-        print(f"Digest emailed at {datetime.now()}")
+        resp = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": EMAIL_FROM,
+                "to": [EMAIL_TO],
+                "subject": subject,
+                "html": html_body,
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200 or resp.status_code == 201:
+            print(f"Digest emailed via Resend at {datetime.now()}")
+        else:
+            print(f"Resend error {resp.status_code}: {resp.text}")
     except Exception as e:
         print(f"Email error: {e}")
 
