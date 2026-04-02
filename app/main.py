@@ -256,6 +256,12 @@ def send_email_digest():
     except Exception as e:
         print(f"Email error: {e}")
 
+@app.get("/send-digest-now")
+def trigger_digest():
+    send_email_digest()
+    return {"status": "triggered"}
+```
+
 # ── SCHEDULER ─────────────────────────────────────────────────────────────────
 
 scheduler = BackgroundScheduler(timezone=pytz.timezone("Asia/Kolkata"))
