@@ -260,7 +260,6 @@ def send_email_digest():
 def trigger_digest():
     send_email_digest()
     return {"status": "triggered"}
-```
 
 # ── SCHEDULER ─────────────────────────────────────────────────────────────────
 
